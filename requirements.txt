@@ -1,0 +1,16 @@
+# Core scientific stack
+pandas==2.2.2
+numpy==1.26.4
+matplotlib==3.9.0
+
+# Agent-based modeling
+mesa==2.1.5
+
+# Data handling
+openpyxl==3.1.5
+
+# Dashboard
+streamlit==1.38.0
+
+# Optional: development tools
+jupyter==1.0.0
