@@ -162,6 +162,7 @@ class StudentAgent(Agent):
 
         # Convenience attributes
         self.academic_ability = profile["academic_ability"]
+        self.predicted_gpa = profile.get("predicted_gpa", 2.5)  # SAT-driven predictor
         self.dropout_chance = profile["dropout_chance"]
         self.study_plan = profile["study_plan"]
 
@@ -178,8 +179,8 @@ class StudentAgent(Agent):
 
         # Semester counters
         self.semester_num = 1
-        self.low_gpa_streak = 0  # for academic probation
-        self.graduation_semester = None  # NEW
+        self.low_gpa_streak = 0  # for probation
+        self.graduation_semester = None
 
     def step(self):
         """Advance one semester for this student."""
@@ -187,13 +188,13 @@ class StudentAgent(Agent):
             return
 
         # --- Dropout Logic ---
-        # Early attrition (low ability, first 4 semesters)
+        # Early attrition (low ability + early terms)
         if 2 <= self.semester_num <= 4 and self.academic_ability < 0.65:
-            if random.random() < 0.15:  # 15% chance
+            if random.random() < 0.15:
                 self.dropped_out = True
                 return
 
-        # Academic probation rule (low GPA for 2+ consecutive semesters)
+        # Academic probation rule
         if self.semester_num > 3 and self.gpa < 2.0:
             self.low_gpa_streak += 1
             if self.low_gpa_streak >= 2:
@@ -202,20 +203,18 @@ class StudentAgent(Agent):
         else:
             self.low_gpa_streak = 0
 
-        # Stagnation rule (not enough credits after 4 semesters)
+        # Stagnation rule (too few credits after 4 semesters)
         if self.semester_num == 5 and self.credits_completed < 12:
             self.dropped_out = True
             return
 
         # Random late attrition
-        if self.semester_num >= 6 and random.random() < 0.02:  # 2% chance
+        if self.semester_num >= 6 and random.random() < 0.02:
             self.dropped_out = True
             return
 
         # --- Course Enrollment ---
         semester_courses = self.study_plan.get(str(self.semester_num), [])
-
-        # Add repeat courses if not already passed
         for repeat in list(self.repeat_courses):
             if repeat not in semester_courses and repeat not in self.completed_courses:
                 semester_courses.append(repeat)
@@ -223,9 +222,9 @@ class StudentAgent(Agent):
         # Simulate each course
         for course_code in semester_courses:
             if course_code in self.completed_courses:
-                continue  # already passed
+                continue
 
-            grade = self.assign_grade(self.academic_ability)
+            grade = self.assign_grade()
             self.transcript[course_code] = grade
 
             if grade == "F":
@@ -240,28 +239,31 @@ class StudentAgent(Agent):
         # Update GPA
         self.update_gpa()
 
-        # Check graduation
+        # Graduation check
         if self.credits_completed >= self.model.required_credits and all(
             c in self.completed_courses for c in self.core_courses
         ):
             self.graduated = True
             self.dropped_out = False
-            if self.graduation_semester is None:  # record once
+            if self.graduation_semester is None:
                 self.graduation_semester = self.semester_num
 
-        # Move to next semester (allow up to 14)
         self.semester_num += 1
 
-    def assign_grade(self, ability):
-        """Assign grade influenced by academic ability."""
+    def assign_grade(self):
+        """Assign grade influenced by predicted GPA from SAT."""
         grades = ["A", "B", "C", "D", "F"]
+        base = self.predicted_gpa  # range ~1.5–4.0
+
+        # Probability weights shaped around predicted GPA
         weights = [
-            ability * 4,        # A
-            ability * 2.5,      # B
-            (1 - ability) * 2,  # C
-            (1 - ability) * 1.5,# D
-            (1 - ability) * 4   # F
+            max(0.1, (base - 2.0) * 2.0),   # A
+            max(0.1, (base - 1.5) * 1.8),   # B
+            max(0.1, 3.0 - abs(base - 2.5)),# C
+            max(0.1, (2.5 - base) * 1.5),   # D
+            max(0.1, (2.0 - base) * 2.0)    # F
         ]
+
         return random.choices(grades, weights=weights, k=1)[0]
 
     def update_gpa(self):

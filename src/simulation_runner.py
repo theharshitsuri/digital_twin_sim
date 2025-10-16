@@ -94,16 +94,23 @@ if __name__ == "__main__":
 
     # --- Save detailed per-student outcomes ---
     student_records = []
-    for student in bscs_model.schedule.agents:
+    for student, profile in zip(bscs_model.schedule.agents, students_data):
         student_records.append({
-            "id": student.unique_id,
-            "credits_completed": student.credits_completed,
-            "gpa": student.gpa,
-            "graduated": student.graduated,
-            "dropped_out": student.dropped_out,
-            "semesters_enrolled": student.semester_num - 1,
-            "graduation_semester": getattr(student, "graduation_semester", None)  # NEW
-        })
+    "id": student.unique_id,
+    "credits_completed": student.credits_completed,
+    "gpa": student.gpa,
+    "graduated": student.graduated,
+    "dropped_out": student.dropped_out,
+    "semesters_enrolled": student.semester_num - 1,
+    "graduation_semester": getattr(student, "graduation_semester", None),
+    "admission_term": profile.get("admission_term"),
+    "started_in_fall": profile.get("started_in_fall"),
+    # ADD THESE:
+    "transcript": student.transcript,  # Course grades!
+    "completed_courses": list(student.completed_courses),
+    "sat_score": profile.get("sat_score"),
+    "academic_ability": profile.get("academic_ability")
+})
 
     df = pd.DataFrame(student_records)
     df.to_csv("data/student_outcomes.csv", index=False)
@@ -114,11 +121,19 @@ if __name__ == "__main__":
         df[df["graduated"]]
         .groupby("graduation_semester")
         .size()
-        .reindex([10,11,12, 13, 14], fill_value=0)
+        .reindex([10, 11, 12, 13, 14], fill_value=0)
     )
     print("\nGraduation Timing:")
     for sem, count in grad_counts.items():
         print(f" → Graduated in {sem} semesters: {count}")
+
+    # --- Extra Analysis: Cohort Outcomes ---
+    cohort_stats = df.groupby("admission_term")[["graduated", "dropped_out"]].sum()
+    cohort_stats["still_enrolled"] = (
+        df.groupby("admission_term").size() - cohort_stats["graduated"] - cohort_stats["dropped_out"]
+    )
+    print("\nCohort Outcomes (by Admission Term):")
+    print(cohort_stats)
 
     # Plot macro results
     results.plot()
