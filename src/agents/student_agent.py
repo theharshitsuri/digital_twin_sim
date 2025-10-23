@@ -1,154 +1,3 @@
-"""
-import random
-from mesa import Agent
-
-class StudentAgent(Agent):
-    def __init__(self, unique_id, model, profile):
-        super().__init__(unique_id, model)
-        self.unique_id = unique_id
-        self.model = model
-
-        # Load from profile (synthetic JSON record)
-        self.academic_ability = profile["academic_ability"]
-        self.dropout_chance = profile["dropout_chance"]
-        self.admission_term = profile["admission_term"]
-        self.study_plan = profile.get("study_plan", {})
-
-        # Start state
-        self.credits_completed = profile.get("credits_completed", 0)
-        self.graduated = profile.get("graduated", False)
-        self.drop_out = profile.get("dropped_out", False)
-        self.transcript = profile.get("transcript", {})
-        self.completed_courses = profile.get("completed_courses", [])
-        self.current_courses = profile.get("current_courses", [])
-        self.repeat_courses = profile.get("repeat_courses", [])
-        self.gpa = profile.get("gpa", 0.0)
-        self.semesters_enrolled = 0
-        self.graduation_semester_num = -1
-
-    def step(self):
-        
-        if self.graduated or self.drop_out:
-            return
-
-        self.semesters_enrolled += 1
-        self.select_courses()
-        self.attempt_courses()
-        self.calculate_gpa()
-        self.check_graduation()
-        self.check_dropout()
-
-    def select_courses(self):
-        
-        planned_courses = []
-
-        if self.repeat_courses:
-            planned_courses.extend(self.repeat_courses)
-
-        if str(self.semesters_enrolled) in self.study_plan:
-            planned_courses.extend(self.study_plan[str(self.semesters_enrolled)])
-
-        # Remove duplicates + already completed
-        planned_courses = list(set(planned_courses) - set(self.completed_courses))
-
-        valid_courses = []
-        current_term = self.get_current_term()
-
-        for course_code in planned_courses:
-            course_info = self.model.course_catalog.get(course_code)
-            if not course_info:
-                continue
-
-            # Check prerequisites
-            prereqs_met = all(p in self.completed_courses for p in course_info.get("prerequisites", []))
-
-            # Check course availability
-            term_ok = current_term in course_info.get("terms_offered", [])
-
-            if prereqs_met and term_ok:
-                valid_courses.append(course_code)
-
-                # Add co-reqs
-                for coreq in course_info.get("corequisites", []):
-                    if coreq not in valid_courses and coreq not in self.completed_courses:
-                        valid_courses.append(coreq)
-
-        self.current_courses = valid_courses
-
-
-    def get_current_term(self):
-        
-        terms = ["Fall", "Spring", "Summer"]
-        return terms[self.semesters_enrolled % 3]
-
-
-    def attempt_courses(self):
-        
-        if self.semesters_enrolled not in self.transcript:
-            self.transcript[self.semesters_enrolled] = {}
-
-        for course_code in self.current_courses:
-            course_info = self.model.course_catalog.get(course_code, {})
-            credits = course_info.get("credits", 3)  # fallback = 3 if missing
-
-            passed = random.random() < self.academic_ability
-            if passed:
-                grade = "A"
-                self.completed_courses.append(course_code)
-                self.credits_completed += credits
-                if course_code in self.repeat_courses:
-                    self.repeat_courses.remove(course_code)
-            else:
-                grade = "F"
-                if course_code not in self.repeat_courses:
-                    self.repeat_courses.append(course_code)
-
-            # record in transcript
-            self.transcript[self.semesters_enrolled][course_code] = {
-                "grade": grade,
-                "credit": credits
-            }
-
-        self.current_courses = []
-
-
-    def calculate_gpa(self):
-        
-        grade_points = {"A": 4.0, "B": 3.0, "C": 2.0, "D": 1.0, "F": 0.0}
-        best_grades = {}
-
-        for semester, courses in self.transcript.items():
-            for course_code, data in courses.items():
-                grade = data["grade"]
-                credit = data["credit"]
-
-                if course_code not in best_grades or grade_points[grade] > grade_points[best_grades[course_code][0]]:
-                    best_grades[course_code] = (grade, credit)
-
-        total_quality_points = sum(grade_points[g] * c for g, c in best_grades.values())
-        total_credits = sum(c for _, c in best_grades.values())
-
-        self.gpa = total_quality_points / total_credits if total_credits > 0 else 0.0
-
-    def check_graduation(self):
-        
-        if self.credits_completed >= self.model.required_credits:
-            self.graduated = True
-            self.graduation_semester_num = self.semesters_enrolled
-
-    def check_dropout(self):
-        
-        if self.graduated or self.drop_out:
-            return
-
-        dropout_prob = self.dropout_chance
-        if self.gpa < 2.0:
-            dropout_prob += 0.1
-
-        if random.random() < dropout_prob:
-            self.drop_out = True
-"""
-
 import random
 from mesa import Agent
 
@@ -165,6 +14,7 @@ class StudentAgent(Agent):
         self.predicted_gpa = profile.get("predicted_gpa", 2.5)  # SAT-driven predictor
         self.dropout_chance = profile["dropout_chance"]
         self.study_plan = profile["study_plan"]
+        self.admission_term = profile.get("admission_term", "Fall")
 
         # Progress
         self.credits_completed = profile.get("credits_completed", 0)
@@ -181,6 +31,67 @@ class StudentAgent(Agent):
         self.semester_num = 1
         self.low_gpa_streak = 0  # for probation
         self.graduation_semester = None
+        
+        # 🆕 Track blocked courses (for analysis)
+        self.blocked_courses = []
+        
+        # 🆕 Build course-to-typical-term mapping for smart retakes
+        self.course_typical_term = self._build_course_term_mapping()
+
+    def check_prerequisites(self, course_code):
+        """
+        Check if student has completed all prerequisites for a course.
+        Returns True if eligible to enroll, False otherwise.
+        """
+        course_info = self.course_catalog.get(course_code, {})
+        prerequisites = course_info.get("prerequisites", [])
+        
+        # Handle courses with multiple prerequisites (must complete ALL)
+        if isinstance(prerequisites, list):
+            return all(prereq in self.completed_courses for prereq in prerequisites)
+        else:
+            # Single prerequisite (shouldn't happen with our catalog, but safe)
+            return prerequisites in self.completed_courses if prerequisites else True
+
+    def _build_course_term_mapping(self):
+        """
+        Build a mapping of which term each course is typically offered in
+        based on the student's study plan.
+        Returns dict: {course_code: term} where term is "Fall", "Spring", or "Summer"
+        """
+        course_to_term = {}
+        term_cycle = ["Fall", "Spring", "Summer"]
+        
+        # Adjust based on admission term
+        term_offset = {"Fall": 0, "Spring": 1, "Summer": 2}
+        offset = term_offset.get(self.admission_term, 0)
+        
+        for sem_str, courses in self.study_plan.items():
+            sem_num = int(sem_str)
+            # Calculate which term this semester represents
+            term_index = (sem_num - 1 + offset) % 3
+            term = term_cycle[term_index]
+            
+            for course in courses:
+                if course not in course_to_term:  # First occurrence
+                    course_to_term[course] = term
+        
+        return course_to_term
+    
+    def should_retry_course(self, course_code):
+        """
+        Determine if a failed course should be retried this semester based on term matching.
+        Returns True if current model term matches the course's typical term, or if unknown.
+        """
+        typical_term = self.course_typical_term.get(course_code)
+        
+        # If we don't know the typical term, allow retry anytime
+        if typical_term is None:
+            return True
+        
+        # Check if current term matches
+        current_term = self.model.current_term
+        return current_term == typical_term
 
     def step(self):
         """Advance one semester for this student."""
@@ -213,17 +124,40 @@ class StudentAgent(Agent):
             self.dropped_out = True
             return
 
-        # --- Course Enrollment ---
-        semester_courses = self.study_plan.get(str(self.semester_num), [])
+        # --- Course Enrollment with Prerequisite Checking ---
+        planned_courses = self.study_plan.get(str(self.semester_num), [])
+        
+        # 🆕 Add repeat courses ONLY if term matches (smarter scheduling)
         for repeat in list(self.repeat_courses):
-            if repeat not in semester_courses and repeat not in self.completed_courses:
-                semester_courses.append(repeat)
-
-        # Simulate each course
-        for course_code in semester_courses:
+            if repeat not in planned_courses and repeat not in self.completed_courses:
+                if self.should_retry_course(repeat):
+                    planned_courses.append(repeat)
+        
+        # 🆕 Filter courses by prerequisite eligibility
+        enrollable_courses = []
+        for course_code in planned_courses:
+            # Skip if already completed
             if course_code in self.completed_courses:
                 continue
+            
+            # 🆕 Check prerequisites
+            if self.check_prerequisites(course_code):
+                enrollable_courses.append(course_code)
+            else:
+                # Track blocked courses for analysis
+                missing_prereqs = [
+                    p for p in self.course_catalog.get(course_code, {}).get("prerequisites", [])
+                    if p not in self.completed_courses
+                ]
+                self.blocked_courses.append({
+                    'semester': self.semester_num,
+                    'term': self.model.current_term,
+                    'course': course_code,
+                    'missing_prereqs': missing_prereqs
+                })
 
+        # Simulate each enrollable course
+        for course_code in enrollable_courses:
             grade = self.assign_grade()
             self.transcript[course_code] = grade
 
@@ -232,7 +166,8 @@ class StudentAgent(Agent):
                     self.repeat_courses.append(course_code)
             else:
                 self.completed_courses.add(course_code)
-                self.credits_completed += self.course_catalog.get(course_code, {}).get("credits", 3)
+                credits = self.course_catalog.get(course_code, {}).get("credits", 3)
+                self.credits_completed += credits
                 if course_code in self.repeat_courses:
                     self.repeat_courses.remove(course_code)
 
